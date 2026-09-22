@@ -1,1 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>8086 & 8x8 LED Matrix Emulator</title>
+    <style>
+        :root {
+            --bg-color: #1e1e1e;
+            --panel-bg: #2d2d2d;
+            --text-color: #d4d4d4;
+            --accent: #007acc;
+            --led-off: #333333;
+            --led-red: #ff3333;
+            --led-green: #33ff33;
+            --led-yellow: #ffcc00;
+        }
 
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            height: 100vh;
+            box-sizing: border-box;
+            gap: 20px;
+        }
+
+        .panel {
+            background-color: var(--panel-bg);
+            border-radius: 8px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+
+        .editor-container {
+            flex: 1;
+        }
+
+        .hardware-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        textarea {
+            width: 100%;
+            flex: 1;
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 14px;
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 10px;
+            resize: none;
+            box-sizing: border-box;
+        }
+
+        .controls {
+            margin-top: 15px;
+            display: flex;
+            gap: 10px;
+        }
+
+        button {
+            background-color: var(--accent);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.2s;
+        }
+
+        button:hover { background-color: #005999; }
+        button:disabled { background-color: #555; cursor: not-allowed; }
+
+        .matrix {
+            display: grid;
+            grid-template-columns: repeat(8, 30px);
+            grid-template-rows: repeat(8, 30px);
+            gap: 4px;
+            background-color: #111;
+            padding: 10px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .led {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background-color: var(--led-off);
+            box-shadow: inset 0 0 5px rgba(0,0,0,0.5);
+            transition: background-color 0.05s;
+        }
+
+        .registers {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            width: 100%;
+            max-width: 400px;
+        }
+
+        .reg-box {
+            background-color: #1e1e1e;
+            padding: 10px;
+            border-radius: 4px;
+            border: 1px solid #444;
+            font-family: monospace;
+            display: flex;
+            justify-content: space-between;
+        }
+        
+        h2 { margin-top: 0; font-size: 1.2rem; }
+        
+        .status { margin-top: 10px; color: #aaa; font-family: monospace; }
+    </style>
+</head>
+<body>
+
+    <div class="panel editor-container">
+        <h2>8086 Assembly Editor</h2>
+        <textarea id="codeEditor" spellcheck="false">
+; ============================================================
+; LED MATRIX — RED COLUMN SCROLLING RIGHT TO LEFT
+; ============================================================
+
+PA  EQU 00B8H     ; Green Column Cathodes (active-low)
+PB  EQU 00B9H     ; Red Column Cathodes (active-low)
+PC  EQU 00BAH     ; Row Anodes (active-high)
+CR  EQU 00BBH     ; Control Word Register
+
+; --- 8255 INITIALIZATION ---
+    MOV DX, CR
+    MOV AL, 80H       ; Mode 0, Ports A, B, C = All Output
+    OUT DX, AL
+
+    ; --- DISABLE GREEN PERMANENTLY ---
+    MOV DX, PA
+    MOV AL, 0FFH      ; turn OFF all green LEDs (active-low)
+    OUT DX, AL
+
+    ; --- ENABLE ALL ROWS ---
+    MOV DX, PC
+    MOV AL, 0FFH      ; activate all rows (active-high)
+    OUT DX, AL
+
+    ; --- SETUP INITIAL COLUMN: rightmost red column ON ---
+    MOV AL, 11111110B ; PB0 = 0 -> rightmost column ON
+
+SCROLL:
+    MOV DX, PB        ; select red column port
+    OUT DX, AL        ; send pattern to Port B
+
+    CALL DELAY        ; pause so the column is visible
+
+    ROL AL, 1         ; move the "0" bit from PB0 toward PB7
+
+    JMP SCROLL        ; repeat infinitely
+
+; --- DELAY SUBROUTINE ---
+DELAY:
+    MOV CX, 0100H     ; Lowered from FFFFH so browser emulator runs smoothly
+AGAIN:
+    NOP
+    NOP
+    DEC CX
+    JNZ AGAIN
+    RET</textarea>
+        <div class="controls">
+            <button id="btnRun">Assemble & Run</button>
+            <button id="btnStop" disabled>Stop</button>
+            <button id="btnReset">Reset Hardware</button>
+        </div>
+        <div id="status" class="status">Status: Idle</div>
+    </div>
+
+    <div class="panel hardware-container">
+        <h2>8x8 Bi-color LED Matrix</h2>
+        <div class="matrix" id="matrix"></div>
+        
+        <h2 style="margin-top: 20px;">System Registers & Ports</h2>
+        <div class="registers">
+            <div class="reg-box"><span>AX:</span> <span id="reg-ax">0000</span></div>
+            <div class="reg-box"><span>BX:</span> <span id="reg-bx">0000</span></div>
+            <div class="reg-box"><span>CX:</span> <span id="reg-cx">0000</span></div>
+            <div class="reg-box"><span>DX:</span> <span id="reg-dx">0000</span></div>
+            
+            <div class="reg-box"><span>PA (Grn):</span> <span id="port-a">FF</span></div>
+            <div class="reg-box"><span>PB (Red):</span> <span id="port-b">FF</span></div>
+            <div class="reg-box"><span>PC (Row):</span> <span id="port-c">00</span></div>
+            <div class="reg-box"><span>CR (Ctrl):</span> <span id="port-cr">00</span></div>
+        </div>
+    </div>
+
+    <script>
+        // --- HARDWARE STATE ---
+        let regs = { AX: 0, BX: 0, CX: 0, DX: 0 };
+        let ports = { 0x00B8: 0xFF, 0x00B9: 0xFF, 0x00BA: 0x00, 0x00BB: 0x00 };
+        
+        let instructions = [];
+        let labels = {};
+        let ip = 0;
+        let callStack = [];
+        let isRunning = false;
+        let runInterval = null;
+
+        // --- DOM ELEMENTS ---
+        const matrixEl = document.getElementById('matrix');
+        const uiRegs = {
+            ax: document.getElementById('reg-ax'),
+            bx: document.getElementById('reg-bx'),
+            cx: document.getElementById('reg-cx'),
+            dx: document.getElementById('reg-dx'),
+            pa: document.getElementById('port-a'),
+            pb: document.getElementById('port-b'),
+            pc: document.getElementById('port-c'),
+            cr: document.getElementById('port-cr')
+        };
+        const statusEl = document.getElementById('status');
+        
+        // Initialize Matrix UI
+        const leds = [];
+        for (let i = 0; i < 64; i++) {
+            const led = document.createElement('div');
+            led.className = 'led';
+            matrixEl.appendChild(led);
+            leds.push(led);
+        }
+
+        // --- HELPER FUNCTIONS ---
+        function parseValue(valStr, equs) {
+            if (equs && equs[valStr] !== undefined) return equs[valStr];
+            valStr = valStr.toUpperCase();
+            if (valStr.endsWith('H')) return parseInt(valStr.slice(0, -1), 16);
+            if (valStr.endsWith('B')) return parseInt(valStr.slice(0, -1), 2);
+            return parseInt(valStr, 10);
+        }
+
+        function toHex(num, padding) {
+            return num.toString(16).toUpperCase().padStart(padding, '0');
+        }
+
+        function getReg(regName) {
+            regName = regName.toUpperCase();
+            if (regName === 'AL') return regs.AX & 0xFF;
+            if (regName === 'AH') return (regs.AX >> 8) & 0xFF;
+            if (regName === 'CL') return regs.CX & 0xFF;
+            return regs[regName] || 0;
+        }
+
+        function setReg(regName, val) {
+            regName = regName.toUpperCase();
+            if (regName === 'AL') { regs.AX = (regs.AX & 0xFF00) | (val & 0xFF); }
+            else if (regName === 'AH') { regs.AX = (regs.AX & 0x00FF) | ((val & 0xFF) << 8); }
+            else if (regName === 'CL') { regs.CX = (regs.CX & 0xFF00) | (val & 0xFF); }
+            else if (regs[regName] !== undefined) { regs[regName] = val & 0xFFFF; }
+            updateUI();
+        }
+
+        function updateUI() {
+            uiRegs.ax.innerText = toHex(regs.AX, 4);
+            uiRegs.bx.innerText = toHex(regs.BX, 4);
+            uiRegs.cx.innerText = toHex(regs.CX, 4);
+            uiRegs.dx.innerText = toHex(regs.DX, 4);
+            uiRegs.pa.innerText = toHex(ports[0x00B8], 2);
+            uiRegs.pb.innerText = toHex(ports[0x00B9], 2);
+            uiRegs.pc.innerText = toHex(ports[0x00BA], 2);
+            uiRegs.cr.innerText = toHex(ports[0x00BB], 2);
+
+            // Update Matrix (Rows active HIGH, Cols active LOW)
+            const rowData = ports[0x00BA];
+            const greenCols = ports[0x00B8];
+            const redCols = ports[0x00B9];
+
+            for (let r = 0; r < 8; r++) {
+                const rowActive = (rowData & (1 << r)) !== 0; // Row active high (Wait, hardware usually uses Bit 0 for Row 0, etc.)
+                for (let c = 0; c < 8; c++) {
+                    // Reverse col logic because bit 0 usually means rightmost column
+                    const colBit = 1 << (7 - c); 
+                    const greenActive = (greenCols & colBit) === 0; // Active low
+                    const redActive = (redCols & colBit) === 0;   // Active low
+
+                    const ledIndex = r * 8 + c;
+                    
+                    if (rowActive) {
+                        if (redActive && greenActive) leds[ledIndex].style.backgroundColor = 'var(--led-yellow)';
+                        else if (redActive) leds[ledIndex].style.backgroundColor = 'var(--led-red)';
+                        else if (greenActive) leds[ledIndex].style.backgroundColor = 'var(--led-green)';
+                        else leds[ledIndex].style.backgroundColor = 'var(--led-off)';
+                        
+                        if (redActive || greenActive) {
+                            leds[ledIndex].style.boxShadow = `0 0 10px ${leds[ledIndex].style.backgroundColor}`;
+                        } else {
+                            leds[ledIndex].style.boxShadow = 'inset 0 0 5px rgba(0,0,0,0.5)';
+                        }
+                    } else {
+                        leds[ledIndex].style.backgroundColor = 'var(--led-off)';
+                        leds[ledIndex].style.boxShadow = 'inset 0 0 5px rgba(0,0,0,0.5)';
+                    }
+                }
+            }
+        }
+
+        // --- ASSEMBLER ---
+        function assemble(code) {
+            const lines = code.split('\n');
+            instructions = [];
+            labels = {};
+            let equs = {};
+            
+            let addr = 0;
+            
+            for (let line of lines) {
+                // Remove comments and trim
+                let raw = line.split(';')[0].trim();
+                if (!raw) continue;
+
+                // Handle EQU
+                if (raw.includes('EQU')) {
+                    const parts = raw.split(/\s+/);
+                    equs[parts[0]] = parseValue(parts[2]);
+                    continue;
+                }
+
+                // Handle Labels
+                if (raw.endsWith(':')) {
+                    labels[raw.slice(0, -1)] = addr;
+                    continue;
+                }
+
+                // Parse instruction
+                const parts = raw.split(/[\s,]+/).filter(Boolean);
+                if (parts.length > 0) {
+                    instructions.push({ op: parts[0].toUpperCase(), args: parts.slice(1), line: raw });
+                    addr++;
+                }
+            }
+            
+            // Second pass: resolve EQUs in instructions
+            for (let inst of instructions) {
+                for (let i = 0; i < inst.args.length; i++) {
+                    if (equs[inst.args[i]] !== undefined) {
+                        inst.args[i] = equs[inst.args[i]];
+                    }
+                }
+            }
+        }
+
+        // --- INTERPRETER ---
+        function step() {
+            if (ip >= instructions.length || ip < 0) {
+                stopEmulator();
+                statusEl.innerText = "Status: Halted (EOF)";
+                return false;
+            }
+
+            const inst = instructions[ip];
+            let jumped = false;
+
+            try {
+                switch (inst.op) {
+                    case 'MOV':
+                        let val = isNaN(parseValue(inst.args[1])) ? getReg(inst.args[1]) : parseValue(inst.args[1]);
+                        setReg(inst.args[0], val);
+                        break;
+                    case 'OUT':
+                        // Assuming OUT DX, AL
+                        let portNum = getReg('DX');
+                        let outVal = getReg('AL');
+                        ports[portNum] = outVal;
+                        break;
+                    case 'ROL':
+                        if (inst.args[0] === 'AL') {
+                            let al = getReg('AL');
+                            let count = parseValue(inst.args[1]);
+                            for (let i = 0; i < count; i++) {
+                                let msb = (al & 0x80) >> 7;
+                                al = ((al << 1) | msb) & 0xFF;
+                            }
+                            setReg('AL', al);
+                        }
+                        break;
+                    case 'JMP':
+                        ip = labels[inst.args[0]];
+                        jumped = true;
+                        break;
+                    case 'CALL':
+                        callStack.push(ip + 1);
+                        ip = labels[inst.args[0]];
+                        jumped = true;
+                        break;
+                    case 'RET':
+                        if (callStack.length > 0) {
+                            ip = callStack.pop();
+                            jumped = true;
+                        }
+                        break;
+                    case 'DEC':
+                        let decVal = getReg(inst.args[0]) - 1;
+                        if (decVal < 0) decVal = 0xFFFF; // 16-bit wrap
+                        setReg(inst.args[0], decVal);
+                        // set Zero Flag logic here implicitly for JNZ
+                        regs._ZF = (decVal === 0);
+                        break;
+                    case 'JNZ':
+                        if (!regs._ZF) {
+                            ip = labels[inst.args[0]];
+                            jumped = true;
+                        }
+                        break;
+                    case 'NOP':
+                        break;
+                    default:
+                        console.log("Unsupported instruction:", inst.op);
+                }
+            } catch(e) {
+                console.error("Error at instruction:", inst, e);
+                stopEmulator();
+                statusEl.innerText = `Status: Error at IP=${ip}`;
+                return false;
+            }
+
+            if (!jumped) ip++;
+            return true;
+        }
+
+        function runLoop() {
+            if (!isRunning) return;
+            
+            // Run multiple instructions per frame to simulate speed
+            // Specifically fast-forwarding through the DELAY loop
+            for (let i = 0; i < 500; i++) { 
+                if (!step()) break;
+            }
+            
+            updateUI();
+
+            if (isRunning) {
+                // requestAnimationFrame creates a smoother UI update than setInterval
+                requestAnimationFrame(runLoop);
+            }
+        }
+
+        function startEmulator() {
+            const code = document.getElementById('codeEditor').value;
+            assemble(code);
+            ip = 0;
+            callStack = [];
+            regs = { AX: 0, BX: 0, CX: 0, DX: 0, _ZF: false };
+            ports = { 0x00B8: 0xFF, 0x00B9: 0xFF, 0x00BA: 0x00, 0x00BB: 0x00 };
+            
+            isRunning = true;
+            document.getElementById('btnRun').disabled = true;
+            document.getElementById('btnStop').disabled = false;
+            statusEl.innerText = "Status: Running";
+            
+            runLoop();
+        }
+
+        function stopEmulator() {
+            isRunning = false;
+            document.getElementById('btnRun').disabled = false;
+            document.getElementById('btnStop').disabled = true;
+            statusEl.innerText = "Status: Stopped";
+            updateUI();
+        }
+
+        function resetHardware() {
+            stopEmulator();
+            regs = { AX: 0, BX: 0, CX: 0, DX: 0, _ZF: false };
+            ports = { 0x00B8: 0xFF, 0x00B9: 0xFF, 0x00BA: 0x00, 0x00BB: 0x00 };
+            updateUI();
+            statusEl.innerText = "Status: Idle";
+        }
+
+        // --- EVENT LISTENERS ---
+        document.getElementById('btnRun').addEventListener('click', startEmulator);
+        document.getElementById('btnStop').addEventListener('click', stopEmulator);
+        document.getElementById('btnReset').addEventListener('click', resetHardware);
+
+        // Initial setup
+        resetHardware();
+    </script>
+</body>
+</html>
